@@ -41,6 +41,7 @@ class MainActivity : AppCompatActivity() {
     private var volumeKeyDownTime = 0L
     private val LONG_PRESS_MS = 800L
     private var recordingBlinkRunnable: Runnable? = null
+    private var wasJustStartedByLongPress = false  // 标记录像是否刚由长按启动
 
     companion object {
         private const val PERMISSIONS_REQUEST_CODE = 10
@@ -85,10 +86,19 @@ class MainActivity : AppCompatActivity() {
                 it.setSurfaceProvider(binding.previewView.surfaceProvider)
             }
 
-            // 拍照：最高画质模式，系统自动选最大分辨率
+            // 拍照：自动选最大分辨率（ResolutionSelector 优先最高像素）
+            val resolutionSelector = ResolutionSelector.Builder()
+                .setResolutionStrategy(
+                    ResolutionStrategy(
+                        Size(9999, 9999), // 请求超大尺寸，系统会自动选传感器最大支持值
+                        ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER
+                    )
+                )
+                .build()
+
             imageCapture = ImageCapture.Builder()
-                .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
-                .setTargetResolution(android.util.Size(4032, 3024))
+                .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY) // 最高画质模式
+                .setResolutionSelector(resolutionSelector)
                 .build()
 
             // 录像：优先 UHD(4K) → FHD(1080p) → HD(720p)
@@ -122,7 +132,7 @@ class MainActivity : AppCompatActivity() {
         startForegroundService(Intent(this, CameraService::class.java))
     }
 
-    // ── 音量键：短按拍照，长按开始录像，录像中再按停止 ─────────────────────────
+    // ── 音量键：短按拍照，长按开始录像，录像中短按停止 ─────────────────────────
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val keyCode = event.keyCode
@@ -148,9 +158,13 @@ class MainActivity : AppCompatActivity() {
                 longPressRunnable = null
 
                 when {
-                    isRecording -> stopVideoRecording()
-                    held < LONG_PRESS_MS -> takePhoto()
+                    // 录像中，且不是刚由本次长按启动的，才停止录像
+                    isRecording && !wasJustStartedByLongPress -> stopVideoRecording()
+                    // 短按且未在录像中，拍照
+                    held < LONG_PRESS_MS && !isRecording -> takePhoto()
                 }
+                // 重置标记
+                wasJustStartedByLongPress = false
                 return true
             }
         }
@@ -201,6 +215,8 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
+        wasJustStartedByLongPress = true  // 标记本次录像由长按启动
+
         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.CHINA).format(Date())
         val contentValues = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, "VID_$timestamp")
@@ -249,7 +265,7 @@ class MainActivity : AppCompatActivity() {
     private fun showRecordingUI(show: Boolean) {
         if (show) {
             binding.recordingIndicator.visibility = View.VISIBLE
-            showToast("🔴 录像中… 按音量键停止")
+            showToast("🔴 录像中… 短按音量键停止")
             recordingBlinkRunnable = object : Runnable {
                 override fun run() {
                     binding.recordingIndicator.visibility =
