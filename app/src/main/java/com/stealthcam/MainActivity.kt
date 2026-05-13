@@ -9,6 +9,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
+import android.util.Size
 import android.view.KeyEvent
 import android.view.View
 import android.view.WindowManager
@@ -30,6 +31,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private lateinit var cameraExecutor: ExecutorService
 
+    private var imageCapture: ImageCapture? = null
     private var videoCapture: VideoCapture<Recorder>? = null
     private var recording: Recording? = null
     private var isRecording = false
@@ -37,7 +39,7 @@ class MainActivity : AppCompatActivity() {
     private val handler = Handler(Looper.getMainLooper())
     private var longPressRunnable: Runnable? = null
     private var volumeKeyDownTime = 0L
-    private val LONG_PRESS_MS = 700L
+    private val LONG_PRESS_MS = 800L
     private var recordingBlinkRunnable: Runnable? = null
 
     companion object {
@@ -54,13 +56,8 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // 透明窗口
         window.apply {
-            setFlags(
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-            )
-            addFlags(WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH)
+            addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             setBackgroundDrawableResource(android.R.color.transparent)
         }
 
@@ -88,8 +85,28 @@ class MainActivity : AppCompatActivity() {
                 it.setSurfaceProvider(binding.previewView.surfaceProvider)
             }
 
+            // 拍照：自动选最大分辨率（ResolutionSelector 优先最高像素）
+            val resolutionSelector = ResolutionSelector.Builder()
+                .setResolutionStrategy(
+                    ResolutionStrategy(
+                        Size(9999, 9999), // 请求超大尺寸，系统会自动选传感器最大支持值
+                        ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER
+                    )
+                )
+                .build()
+
+            imageCapture = ImageCapture.Builder()
+                .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY) // 最高画质模式
+                .setResolutionSelector(resolutionSelector)
+                .build()
+
+            // 录像：优先 UHD(4K) → FHD(1080p) → HD(720p)
+            val qualitySelector = QualitySelector.fromOrderedList(
+                listOf(Quality.UHD, Quality.FHD, Quality.HD),
+                FallbackStrategy.lowerQualityOrHigherThan(Quality.HD)
+            )
             val recorder = Recorder.Builder()
-                .setQualitySelector(QualitySelector.from(Quality.HD))
+                .setQualitySelector(qualitySelector)
                 .build()
             videoCapture = VideoCapture.withOutput(recorder)
 
@@ -99,6 +116,7 @@ class MainActivity : AppCompatActivity() {
                     this,
                     CameraSelector.DEFAULT_BACK_CAMERA,
                     preview,
+                    imageCapture,
                     videoCapture
                 )
             } catch (e: Exception) {
@@ -110,47 +128,79 @@ class MainActivity : AppCompatActivity() {
     // ── 前台服务（息屏保活）────────────────────────────────────────────────────
 
     private fun startCameraService() {
-        val intent = Intent(this, CameraService::class.java)
-        startForegroundService(intent)
+        startForegroundService(Intent(this, CameraService::class.java))
     }
 
-    // ── 音量键：长按开始录像，短按停止录像 ────────────────────────────────────
+    // ── 音量键：短按拍照，长按开始录像，录像中再按停止 ─────────────────────────
 
-override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-    val keyCode = event.keyCode
-    if (keyCode != KeyEvent.KEYCODE_VOLUME_UP && keyCode != KeyEvent.KEYCODE_VOLUME_DOWN) {
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val keyCode = event.keyCode
+        if (keyCode != KeyEvent.KEYCODE_VOLUME_UP && keyCode != KeyEvent.KEYCODE_VOLUME_DOWN) {
+            return super.dispatchKeyEvent(event)
+        }
+
+        when (event.action) {
+            KeyEvent.ACTION_DOWN -> {
+                if (event.repeatCount == 0) {
+                    volumeKeyDownTime = System.currentTimeMillis()
+                    if (!isRecording) {
+                        longPressRunnable = Runnable { startVideoRecording() }
+                        handler.postDelayed(longPressRunnable!!, LONG_PRESS_MS)
+                    }
+                }
+                return true
+            }
+
+            KeyEvent.ACTION_UP -> {
+                val held = System.currentTimeMillis() - volumeKeyDownTime
+                longPressRunnable?.let { handler.removeCallbacks(it) }
+                longPressRunnable = null
+
+                when {
+                    isRecording -> stopVideoRecording()
+                    held < LONG_PRESS_MS -> takePhoto()
+                }
+                return true
+            }
+        }
         return super.dispatchKeyEvent(event)
     }
 
-    when (event.action) {
-        KeyEvent.ACTION_DOWN -> {
-            if (event.repeatCount == 0) {
-                volumeKeyDownTime = System.currentTimeMillis()
-                if (!isRecording) {
-                    longPressRunnable = Runnable { startVideoRecording() }
-                    handler.postDelayed(longPressRunnable!!, LONG_PRESS_MS)
+    // ── 拍照（最大像素）────────────────────────────────────────────────────────
+
+    private fun takePhoto() {
+        val imageCapture = imageCapture ?: return
+
+        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.CHINA).format(Date())
+        val contentValues = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, "IMG_$timestamp")
+            put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+                put(MediaStore.Images.Media.RELATIVE_PATH, "DCIM/隐形相机")
+        }
+
+        val outputOptions = ImageCapture.OutputFileOptions.Builder(
+            contentResolver,
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            contentValues
+        ).build()
+
+        imageCapture.takePicture(
+            outputOptions,
+            ContextCompat.getMainExecutor(this),
+            object : ImageCapture.OnImageSavedCallback {
+                override fun onImageSaved(output: ImageCapture.OutputFileResults) {
+                    showFlash()
+                    showToast("✅ 照片已保存")
+                }
+                override fun onError(exception: ImageCaptureException) {
+                    showToast("❌ 拍照失败: ${exception.message}")
                 }
             }
-            return true
-        }
-        KeyEvent.ACTION_UP -> {
-            val held = System.currentTimeMillis() - volumeKeyDownTime
-            // 安全移除长按回调，不用 ?: return
-            longPressRunnable?.let { handler.removeCallbacks(it) }
-            longPressRunnable = null
-
-            if (isRecording && held < LONG_PRESS_MS) {
-                // 录像中短按 → 停止
-                stopVideoRecording()
-            }
-            // 未录像时短按不触发任何动作（长按已在 DOWN 阶段处理）
-            return true
-        }
+        )
     }
-    return super.dispatchKeyEvent(event)
-}
 
-    // ── 录像 ──────────────────────────────────────────────────────────────────
+    // ── 录像（最高清晰度）──────────────────────────────────────────────────────
 
     private fun startVideoRecording() {
         val videoCapture = videoCapture ?: return
@@ -186,7 +236,7 @@ override fun dispatchKeyEvent(event: KeyEvent): Boolean {
                         isRecording = false
                         runOnUiThread { showRecordingUI(false) }
                         if (!event.hasError()) showToast("🎬 视频已保存")
-                        else showToast("录像失败")
+                        else showToast("录像失败: ${event.error}")
                     }
                     else -> {}
                 }
@@ -198,12 +248,17 @@ override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         recording = null
     }
 
-    // ── UI ────────────────────────────────────────────────────────────────────
+    // ── UI 反馈 ────────────────────────────────────────────────────────────────
+
+    private fun showFlash() {
+        binding.previewView.alpha = 0f
+        handler.postDelayed({ binding.previewView.alpha = 1f }, 150)
+    }
 
     private fun showRecordingUI(show: Boolean) {
         if (show) {
             binding.recordingIndicator.visibility = View.VISIBLE
-            showToast("🔴 录像中… 短按音量键停止")
+            showToast("🔴 录像中… 按音量键停止")
             recordingBlinkRunnable = object : Runnable {
                 override fun run() {
                     binding.recordingIndicator.visibility =
