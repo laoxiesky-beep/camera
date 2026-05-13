@@ -22,12 +22,12 @@ jobs:
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: '8.0'
-      - name: Clean build cache
-        run: ./gradlew clean
+
       - name: Generate gradlew
         run: |
           gradle wrapper --gradle-version 8.0 --distribution-type bin
           chmod +x gradlew
+          ./gradlew clean
 
       - name: Build debug APK
         run: ./gradlew assembleDebug
