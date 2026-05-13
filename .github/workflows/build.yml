@@ -20,10 +20,12 @@ jobs:
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.0'
 
       - name: Generate gradlew
         run: |
-          gradle wrapper --gradle-version 8.0
+          gradle wrapper --gradle-version 8.0 --distribution-type bin
           chmod +x gradlew
 
       - name: Build debug APK
