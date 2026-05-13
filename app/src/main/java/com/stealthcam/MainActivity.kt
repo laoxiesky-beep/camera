@@ -85,19 +85,10 @@ class MainActivity : AppCompatActivity() {
                 it.setSurfaceProvider(binding.previewView.surfaceProvider)
             }
 
-            // 拍照：自动选最大分辨率（ResolutionSelector 优先最高像素）
-            val resolutionSelector = ResolutionSelector.Builder()
-                .setResolutionStrategy(
-                    ResolutionStrategy(
-                        Size(9999, 9999), // 请求超大尺寸，系统会自动选传感器最大支持值
-                        ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER
-                    )
-                )
-                .build()
-
+            // 拍照：最高画质模式，系统自动选最大分辨率
             imageCapture = ImageCapture.Builder()
-                .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY) // 最高画质模式
-                .setResolutionSelector(resolutionSelector)
+                .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+                .setTargetResolution(android.util.Size(4032, 3024))
                 .build()
 
             // 录像：优先 UHD(4K) → FHD(1080p) → HD(720p)
