@@ -116,34 +116,39 @@ class MainActivity : AppCompatActivity() {
 
     // ── 音量键：长按开始录像，短按停止录像 ────────────────────────────────────
 
-    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        val keyCode = event.keyCode
-        if (keyCode != KeyEvent.KEYCODE_VOLUME_UP && keyCode != KeyEvent.KEYCODE_VOLUME_DOWN) {
-            return super.dispatchKeyEvent(event)
-        }
-
-        when (event.action) {
-            KeyEvent.ACTION_DOWN -> {
-                if (event.repeatCount == 0) {
-                    volumeKeyDownTime = System.currentTimeMillis()
-                    if (!isRecording) {
-                        longPressRunnable = Runnable { startVideoRecording() }
-                        handler.postDelayed(longPressRunnable!!, LONG_PRESS_MS)
-                    }
-                }
-                return true
-            }
-            KeyEvent.ACTION_UP -> {
-                val held = System.currentTimeMillis() - volumeKeyDownTime
-                handler.removeCallbacks(longPressRunnable ?: return true)
-                if (isRecording && held < LONG_PRESS_MS) {
-                    stopVideoRecording()
-                }
-                return true
-            }
-        }
+override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+    val keyCode = event.keyCode
+    if (keyCode != KeyEvent.KEYCODE_VOLUME_UP && keyCode != KeyEvent.KEYCODE_VOLUME_DOWN) {
         return super.dispatchKeyEvent(event)
     }
+
+    when (event.action) {
+        KeyEvent.ACTION_DOWN -> {
+            if (event.repeatCount == 0) {
+                volumeKeyDownTime = System.currentTimeMillis()
+                if (!isRecording) {
+                    longPressRunnable = Runnable { startVideoRecording() }
+                    handler.postDelayed(longPressRunnable!!, LONG_PRESS_MS)
+                }
+            }
+            return true
+        }
+        KeyEvent.ACTION_UP -> {
+            val held = System.currentTimeMillis() - volumeKeyDownTime
+            // 安全移除长按回调，不用 ?: return
+            longPressRunnable?.let { handler.removeCallbacks(it) }
+            longPressRunnable = null
+
+            if (isRecording && held < LONG_PRESS_MS) {
+                // 录像中短按 → 停止
+                stopVideoRecording()
+            }
+            // 未录像时短按不触发任何动作（长按已在 DOWN 阶段处理）
+            return true
+        }
+    }
+    return super.dispatchKeyEvent(event)
+}
 
     // ── 录像 ──────────────────────────────────────────────────────────────────
 
